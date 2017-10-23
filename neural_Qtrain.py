@@ -73,20 +73,36 @@ def get_network(state_dim, action_dim, hidden_nodes=HIDDEN_NODES):
     # TO IMPLEMENT: Q network, whose input is state_in, and has action_dim outputs
     # which are the network's esitmation of the Q values for those actions and the
     # input state. The final layer should be assigned to the variable q_values
-    ...
-    q_values = ...
+    
+    w1 = weight_variable([state_dim, hidden_nodes])
+    b1 = bias_variable([hidden_nodes])
+
+    y1 = tf.nn.relu(tf.matmul(state_in, w1) + b1)
+
+    w2 = weight_variable([int(y1.get_shape()[1]), action_dim])
+    b2 = bias_variable([action_dim])
+
+    q_values = tf.matmul(y1, w2) + b2
 
     q_selected_action = \
         tf.reduce_sum(tf.multiply(q_values, action_in), reduction_indices=1)
 
     # TO IMPLEMENT: loss function
     # should only be one line, if target_in is implemented correctly
-    loss = ...
+    loss = tf.reduce_mean(tf.square(target_in - q_selected_action))
     optimise_step = tf.train.AdamOptimizer().minimize(loss)
 
     train_loss_summary_op = tf.summary.scalar("TrainingLoss", loss)
     return state_in, action_in, target_in, q_values, q_selected_action, \
            loss, optimise_step, train_loss_summary_op
+
+def weight_variable(shape):
+	initial = tf.truncated_normal(shape)
+	return tf.Variable(initial)
+
+def bias_variable(shape):
+	initial = tf.constant(0.01, shape=shape)
+	return tf.Variable(initial)
 
 
 def init_session():
@@ -129,9 +145,12 @@ def update_replay_buffer(replay_buffer, state, action, reward, next_state, done,
     """
     # TO IMPLEMENT: append to the replay_buffer
     # ensure the action is encoded one hot
-    ...
+    
     # append to buffer
-    replay_buffer.append(...)
+    one_hot_action = np.zeros(action_dim)
+    one_hot_action[action] = 1
+
+    replay_buffer.append((state, one_hot_action, reward, next_state, done))
     # Ensure replay_buffer doesn't grow larger than REPLAY_SIZE
     if len(replay_buffer) > REPLAY_SIZE:
         replay_buffer.pop(0)
@@ -188,7 +207,7 @@ def get_train_batch(q_values, state_in, replay_buffer):
             target_batch.append(reward_batch[i])
         else:
             # TO IMPLEMENT: set the target_val to the correct Q value update
-            target_val = ...
+            target_val = reward_batch[i] + GAMMA*np.max(Q_value_batch[i])
             target_batch.append(target_val)
     return target_batch, state_batch, action_batch
 
