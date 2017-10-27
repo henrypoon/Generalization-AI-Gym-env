@@ -4,23 +4,45 @@ import tensorflow as tf
 import numpy as np
 import random
 import datetime
-
+from collections import deque
+from random import randint
 """
 Hyper Parameters
 """
-GAMMA = 0.9  # discount factor for target Q
-INITIAL_EPSILON = 0.6  # starting value of epsilon
-FINAL_EPSILON = 0.1  # final value of epsilon
-EPSILON_DECAY_STEPS = 100
+GAMMA = 0.99  # discount factor for target Q
+INITIAL_EPSILON = 0.9  # starting value of epsilon
+FINAL_EPSILON = 0.01  # final value of epsilon
+EPSILON_DECAY_STEPS = 400
 REPLAY_SIZE = 10000  # experience replay buffer size
 BATCH_SIZE = 128  # size of minibatch
 TEST_FREQUENCY = 10  # How many episodes to run before visualizing test accuracy
 SAVE_FREQUENCY = 1000  # How many episodes to run before saving model (unused)
-NUM_EPISODES = 100  # Episode limitation
-EP_MAX_STEPS = 200  # Step limitation in an episode
+NUM_EPISODES = 10000  # Episode limitation
+EP_MAX_STEPS = 800  # Step limitation in an episode
 # The number of test iters (with epsilon set to 0) to run every TEST_FREQUENCY episodes
-NUM_TEST_EPS = 4
-HIDDEN_NODES = 5
+NUM_TEST_EPS = 10
+HIDDEN_NODES = 48
+PRIORITISED_REPLAY = False
+DOUBLE_DQN = True
+
+MODE = None
+
+global VALUE_NETWORK
+global TAGRET_NETWORK
+global network_vars
+global network_vars_alt
+
+render = False
+
+q = deque([], maxlen=100)
+
+def weight_variable(shape):
+    initial = tf.random_normal(shape, stddev=0.1)
+    return tf.Variable(initial)
+
+def bias_variable(shape):
+    initial = tf.random_normal(shape, stddev=0.1)
+    return tf.Variable(initial)
 
 
 def init(env, env_name):
@@ -43,12 +65,20 @@ def init(env, env_name):
     might help in using the same code for discrete and (discretised) continuous
     action spaces
     """
-    global replay_buffer, epsilon
+    global replay_buffer, epsilon, state_dim, action_dim, is_continuous, action_dict
+    action_dict = {}
     replay_buffer = []
     epsilon = INITIAL_EPSILON
 
     state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.n
+    if (env_name == 'Pendulum-v0'):
+        action_dict['max'] = env.action_space.high[0]
+        action_dict['min'] = env.action_space.low[0]
+        action_dim = 400
+        is_continuous = True;
+    else:
+        is_continuous = False;
+        action_dim = env.action_space.n
     return state_dim, action_dim
 
 
@@ -76,17 +106,15 @@ def get_network(state_dim, action_dim, hidden_nodes=HIDDEN_NODES):
     
     w1 = weight_variable([state_dim, hidden_nodes])
     b1 = bias_variable([hidden_nodes])
-
-    y1 = tf.nn.relu(tf.matmul(state_in, w1) + b1)
-
-    w2 = weight_variable([int(y1.get_shape()[1]), action_dim])
+    w2 = weight_variable([hidden_nodes, action_dim])
     b2 = bias_variable([action_dim])
+
+    y1 = tf.nn.tanh(tf.matmul(state_in, w1) + b1)
 
     q_values = tf.matmul(y1, w2) + b2
 
     q_selected_action = \
         tf.reduce_sum(tf.multiply(q_values, action_in), reduction_indices=1)
-
     # TO IMPLEMENT: loss function
     # should only be one line, if target_in is implemented correctly
     loss = tf.reduce_mean(tf.square(target_in - q_selected_action))
@@ -95,15 +123,6 @@ def get_network(state_dim, action_dim, hidden_nodes=HIDDEN_NODES):
     train_loss_summary_op = tf.summary.scalar("TrainingLoss", loss)
     return state_in, action_in, target_in, q_values, q_selected_action, \
            loss, optimise_step, train_loss_summary_op
-
-def weight_variable(shape):
-	initial = tf.truncated_normal(shape)
-	return tf.Variable(initial)
-
-def bias_variable(shape):
-	initial = tf.constant(0.01, shape=shape)
-	return tf.Variable(initial)
-
 
 def init_session():
     global session, writer
@@ -116,13 +135,24 @@ def init_session():
     writer = tf.summary.FileWriter(logdir, session.graph)
 
 
-def get_action(state, state_in, q_values, epsilon, test_mode, action_dim):
+def get_action(state, epsilon, test_mode, action_dim):
+    global VALUE_NETWORK
+    global TAGRET_NETWORK
+    state_in=VALUE_NETWORK[0]
+    q_values=VALUE_NETWORK[3]
+
+    t_state_in = TAGRET_NETWORK[0]
+    t_q_values = TAGRET_NETWORK[3]
+
     Q_estimates = q_values.eval(feed_dict={state_in: [state]})[0]
+    t_Q_estimates = t_q_values.eval(feed_dict={t_state_in: [state]})[0]
+
     epsilon_to_use = 0.0 if test_mode else epsilon
     if random.random() < epsilon_to_use:
         action = random.randint(0, action_dim - 1)
     else:
-        action = np.argmax(Q_estimates)
+        idx = np.argmax([Q_estimates, t_Q_estimates])
+        action = idx % action_dim
     return action
 
 
@@ -131,7 +161,14 @@ def get_env_action(action):
     Modify for continous action spaces that you have discretised, see hints in
     `init()`
     """
-    return action
+    global is_continuous;
+    if is_continuous:
+        if (action < 200):
+            action *= -1
+        action /=200
+        return [action]
+    else:
+        return action
 
 
 def update_replay_buffer(replay_buffer, state, action, reward, next_state, done,
@@ -147,31 +184,55 @@ def update_replay_buffer(replay_buffer, state, action, reward, next_state, done,
     # ensure the action is encoded one hot
     
     # append to buffer
+    global VALUE_NETWORK
+    state_in=VALUE_NETWORK[0]
+    action_in=VALUE_NETWORK[1]
+    target_in=VALUE_NETWORK[2]
+    q_values=VALUE_NETWORK[3]
+    loss=VALUE_NETWORK[4]
     one_hot_action = np.zeros(action_dim)
     one_hot_action[action] = 1
+    
+    next_state_q_val = q_values.eval(
+            feed_dict={state_in: [next_state]})[0][action]
 
-    replay_buffer.append((state, one_hot_action, reward, next_state, done))
+    loss_val = loss.eval(
+            feed_dict={
+                target_in: [next_state_q_val],
+                state_in: [state],
+                action_in: [one_hot_action]})
+
+
+    replay_buffer.append((state, one_hot_action, reward, next_state, done, loss_val))
     # Ensure replay_buffer doesn't grow larger than REPLAY_SIZE
     if len(replay_buffer) > REPLAY_SIZE:
         replay_buffer.pop(0)
     return None
 
 
-def do_train_step(replay_buffer, state_in, action_in, target_in,
-                  q_values, q_selected_action, loss, optimise_step,
-                  train_loss_summary_op, batch_presentations_count):
-    target_batch, state_batch, action_batch = \
-        get_train_batch(q_values, state_in, replay_buffer)
+def do_train_step(replay_buffer, batch_presentations_count):
 
+    global VALUE_NETWORK
+    state_in=VALUE_NETWORK[0] 
+    action_in=VALUE_NETWORK[1] 
+    target_in=VALUE_NETWORK[2]
+    q_values=VALUE_NETWORK[3] 
+    q_selected_action=VALUE_NETWORK[4] 
+    loss=VALUE_NETWORK[5] 
+    optimise_step=VALUE_NETWORK[6]
+    train_loss_summary_op=VALUE_NETWORK[7]    
+    target_batch, state_batch, action_batch = \
+    get_train_batch(replay_buffer)
     summary, _ = session.run([train_loss_summary_op, optimise_step], feed_dict={
         target_in: target_batch,
         state_in: state_batch,
         action_in: action_batch
     })
+
     writer.add_summary(summary, batch_presentations_count)
 
 
-def get_train_batch(q_values, state_in, replay_buffer):
+def get_train_batch(replay_buffer):
     """
     Generate Batch samples for training by sampling the replay buffer"
     Batches values are suggested to be the following;
@@ -190,7 +251,18 @@ def get_train_batch(q_values, state_in, replay_buffer):
     reflect the equation in the middle of slide 12 of Deep RL 1 Lecture
     notes here: https://webcms3.cse.unsw.edu.au/COMP9444/17s2/resources/12494
     """
-    minibatch = random.sample(replay_buffer, BATCH_SIZE)
+    global VALUE_NETWORK
+    global TAGRET_NETWORK
+    state_in=VALUE_NETWORK[0]
+    q_values=VALUE_NETWORK[3]
+    t_state_in=TAGRET_NETWORK[0]
+    t_q_values=TAGRET_NETWORK[3]
+
+    if PRIORITISED_REPLAY:
+        replay_buffer.sort(key=lambda x: x[5], reverse=True)
+        minibatch = replay_buffer[0:BATCH_SIZE]
+    else:
+        minibatch = random.sample(replay_buffer, BATCH_SIZE)
 
     state_batch = [data[0] for data in minibatch]
     action_batch = [data[1] for data in minibatch]
@@ -198,34 +270,60 @@ def get_train_batch(q_values, state_in, replay_buffer):
     next_state_batch = [data[3] for data in minibatch]
 
     target_batch = []
+
+    Q_target_batch = t_q_values.eval(feed_dict={
+        t_state_in: next_state_batch
+    })
+
     Q_value_batch = q_values.eval(feed_dict={
         state_in: next_state_batch
-    })
+    })    
+
     for i in range(0, BATCH_SIZE):
         sample_is_done = minibatch[i][4]
         if sample_is_done:
             target_batch.append(reward_batch[i])
         else:
             # TO IMPLEMENT: set the target_val to the correct Q value update
-            target_val = reward_batch[i] + GAMMA*np.max(Q_value_batch[i])
+            max_index = np.argmax(Q_value_batch[i])
+            selected_q_next = Q_target_batch[i][max_index]
+            target_val = reward_batch[i] + GAMMA * selected_q_next
             target_batch.append(target_val)
+
+
+
+
     return target_batch, state_batch, action_batch
 
 
 def qtrain(env, state_dim, action_dim,
-           state_in, action_in, target_in, q_values, q_selected_action,
-           loss, optimise_step, train_loss_summary_op,
            num_episodes=NUM_EPISODES, ep_max_steps=EP_MAX_STEPS,
            test_frequency=TEST_FREQUENCY, num_test_eps=NUM_TEST_EPS,
            final_epsilon=FINAL_EPSILON, epsilon_decay_steps=EPSILON_DECAY_STEPS,
-           force_test_mode=False, render=True):
+           force_test_mode=False):
     global epsilon
+    global VALUE_NETWORK
+    global TAGRET_NETWORK
+    global network_vars
+    global network_vars_alt
+    global MODE
     # Record the number of times we do a training batch, take a step, and
     # the total_reward across all eps
     batch_presentations_count = total_steps = total_reward = 0
 
+
+
     for episode in range(num_episodes):
         # initialize task
+
+        MODE = randint(0, 1)
+        if MODE == 1:
+            VALUE_NETWORK = network_vars
+            TAGRET_NETWORK = network_vars_alt
+        else:
+            VALUE_NETWORK = network_vars_alt
+            TAGRET_NETWORK = network_vars
+
         state = env.reset()
         if render: env.render()
 
@@ -241,11 +339,11 @@ def qtrain(env, state_dim, action_dim,
 
         ep_reward = 0
         for step in range(ep_max_steps):
+
             total_steps += 1
 
             # get an action and take a step in the environment
-            action = get_action(state, state_in, q_values, epsilon, test_mode,
-                                action_dim)
+            action = get_action(state, epsilon, test_mode, action_dim)
             env_action = get_env_action(action)
             next_state, reward, done, _ = env.step(env_action)
             ep_reward += reward
@@ -258,17 +356,30 @@ def qtrain(env, state_dim, action_dim,
                                  next_state, done, action_dim)
             state = next_state
 
+
             # perform a training step if the replay_buffer has a batch worth of samples
             if (len(replay_buffer) > BATCH_SIZE):
-                do_train_step(replay_buffer, state_in, action_in, target_in,
-                              q_values, q_selected_action, loss, optimise_step,
-                              train_loss_summary_op, batch_presentations_count)
+                do_train_step(replay_buffer, batch_presentations_count)
                 batch_presentations_count += 1
 
             if done:
                 break
         total_reward += ep_reward
         test_or_train = "test" if test_mode else "train"
+     
+
+
+        # ave = 0
+        # q.append(ep_reward)
+        # for e in q:
+        #   ave += e
+        
+        # print('ave in the queue is ', ave/100)
+        # if ((ave/100) >= 195):
+        #     sys.exit() 
+
+
+
         print("end {0} episode {1}, ep reward: {2}, ave reward: {3}, \
             Batch presentations: {4}, epsilon: {5}".format(
             test_or_train, episode, ep_reward, total_reward / (episode + 1),
@@ -284,14 +395,20 @@ def setup():
     env_name = sys.argv[1] if len(sys.argv) > 1 else default_env_name
     env = gym.make(env_name)
     state_dim, action_dim = init(env, env_name)
+
+    global network_vars
+    global network_vars_alt
     network_vars = get_network(state_dim, action_dim)
+    network_vars_alt = get_network(state_dim, action_dim)
+
     init_session()
-    return env, state_dim, action_dim, network_vars
+    return env, state_dim, action_dim, network_vars, network_vars_alt
 
 
 def main():
-    env, state_dim, action_dim, network_vars = setup()
-    qtrain(env, state_dim, action_dim, *network_vars, render=True)
+    global render;
+    env, state_dim, action_dim, network_vars, network_vars_alt = setup()
+    qtrain(env, state_dim, action_dim)
 
 
 if __name__ == "__main__":
