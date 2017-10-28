@@ -9,28 +9,29 @@ from random import randint
 """
 Hyper Parameters
 """
-GAMMA = 0.99  # discount factor for target Q
-INITIAL_EPSILON = 0.9  # starting value of epsilon
-FINAL_EPSILON = 0.01  # final value of epsilon
-EPSILON_DECAY_STEPS = 400
+GAMMA = 0.9  # discount factor for target Q
+INITIAL_EPSILON = 0.6  # starting value of epsilon
+FINAL_EPSILON = 0.1  # final value of epsilon
+EPSILON_DECAY_STEPS = 100
 REPLAY_SIZE = 10000  # experience replay buffer size
 BATCH_SIZE = 128  # size of minibatch
 TEST_FREQUENCY = 10  # How many episodes to run before visualizing test accuracy
 SAVE_FREQUENCY = 1000  # How many episodes to run before saving model (unused)
 NUM_EPISODES = 10000  # Episode limitation
-EP_MAX_STEPS = 800  # Step limitation in an episode
+EP_MAX_STEPS = 200  # Step limitation in an episode
 # The number of test iters (with epsilon set to 0) to run every TEST_FREQUENCY episodes
-NUM_TEST_EPS = 10
+NUM_TEST_EPS = 4
 HIDDEN_NODES = 48
 PRIORITISED_REPLAY = False
 DOUBLE_DQN = True
 
 MODE = None
+USE_ALT = None
 
-global VALUE_NETWORK
-global TAGRET_NETWORK
-global network_vars
-global network_vars_alt
+VALUE_NETWORK = None
+TAGRET_NETWORK = None
+network_vars = None
+network_vars_alt = None
 
 render = False
 
@@ -138,21 +139,27 @@ def init_session():
 def get_action(state, epsilon, test_mode, action_dim):
     global VALUE_NETWORK
     global TAGRET_NETWORK
+    global USE_ALT
+
     state_in=VALUE_NETWORK[0]
     q_values=VALUE_NETWORK[3]
 
-    t_state_in = TAGRET_NETWORK[0]
-    t_q_values = TAGRET_NETWORK[3]
+    if USE_ALT:
+        t_state_in = TAGRET_NETWORK[0]
+        t_q_values = TAGRET_NETWORK[3]
+        t_Q_estimates = t_q_values.eval(feed_dict={t_state_in: [state]})[0]
 
     Q_estimates = q_values.eval(feed_dict={state_in: [state]})[0]
-    t_Q_estimates = t_q_values.eval(feed_dict={t_state_in: [state]})[0]
 
     epsilon_to_use = 0.0 if test_mode else epsilon
     if random.random() < epsilon_to_use:
         action = random.randint(0, action_dim - 1)
     else:
-        idx = np.argmax([Q_estimates, t_Q_estimates])
-        action = idx % action_dim
+        if USE_ALT:
+            idx = np.argmax([Q_estimates, t_Q_estimates])
+            action = idx % action_dim
+        else:
+            action = np.argmax(Q_estimates)
     return action
 
 
@@ -190,6 +197,7 @@ def update_replay_buffer(replay_buffer, state, action, reward, next_state, done,
     target_in=VALUE_NETWORK[2]
     q_values=VALUE_NETWORK[3]
     loss=VALUE_NETWORK[4]
+
     one_hot_action = np.zeros(action_dim)
     one_hot_action[action] = 1
     
@@ -221,6 +229,7 @@ def do_train_step(replay_buffer, batch_presentations_count):
     loss=VALUE_NETWORK[5] 
     optimise_step=VALUE_NETWORK[6]
     train_loss_summary_op=VALUE_NETWORK[7]    
+
     target_batch, state_batch, action_batch = \
     get_train_batch(replay_buffer)
     summary, _ = session.run([train_loss_summary_op, optimise_step], feed_dict={
@@ -253,6 +262,7 @@ def get_train_batch(replay_buffer):
     """
     global VALUE_NETWORK
     global TAGRET_NETWORK
+
     state_in=VALUE_NETWORK[0]
     q_values=VALUE_NETWORK[3]
     t_state_in=TAGRET_NETWORK[0]
@@ -287,7 +297,7 @@ def get_train_batch(replay_buffer):
             # TO IMPLEMENT: set the target_val to the correct Q value update
             max_index = np.argmax(Q_value_batch[i])
             selected_q_next = Q_target_batch[i][max_index]
-            target_val = reward_batch[i] + GAMMA * selected_q_next
+            target_val = reward_batch[i] + GAMMA * np.max(Q_value_batch[i])
             target_batch.append(target_val)
 
 
@@ -307,23 +317,16 @@ def qtrain(env, state_dim, action_dim,
     global network_vars
     global network_vars_alt
     global MODE
+    global USE_ALT
     # Record the number of times we do a training batch, take a step, and
     # the total_reward across all eps
     batch_presentations_count = total_steps = total_reward = 0
 
+    USE_ALT = False
 
 
     for episode in range(num_episodes):
         # initialize task
-
-        MODE = randint(0, 1)
-        if MODE == 1:
-            VALUE_NETWORK = network_vars
-            TAGRET_NETWORK = network_vars_alt
-        else:
-            VALUE_NETWORK = network_vars_alt
-            TAGRET_NETWORK = network_vars
-
         state = env.reset()
         if render: env.render()
 
@@ -357,8 +360,19 @@ def qtrain(env, state_dim, action_dim,
             state = next_state
 
 
+            MODE = 1
+            if MODE == 1:
+                VALUE_NETWORK = network_vars
+                TAGRET_NETWORK = network_vars_alt
+            else:
+                VALUE_NETWORK = network_vars_alt
+                TAGRET_NETWORK = network_vars
+
+
+
             # perform a training step if the replay_buffer has a batch worth of samples
             if (len(replay_buffer) > BATCH_SIZE):
+                # USE_ALT = True
                 do_train_step(replay_buffer, batch_presentations_count)
                 batch_presentations_count += 1
 
@@ -398,8 +412,11 @@ def setup():
 
     global network_vars
     global network_vars_alt
+    global VALUE_NETWORK
+
     network_vars = get_network(state_dim, action_dim)
     network_vars_alt = get_network(state_dim, action_dim)
+    VALUE_NETWORK = network_vars
 
     init_session()
     return env, state_dim, action_dim, network_vars, network_vars_alt
