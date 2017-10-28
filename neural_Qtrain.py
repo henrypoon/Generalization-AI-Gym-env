@@ -26,7 +26,7 @@ PRIORITISED_REPLAY = False
 DOUBLE_DQN = True
 
 MODE = None
-USE_ALT = None
+USE_ALT = False
 
 VALUE_NETWORK = None
 TAGRET_NETWORK = None
@@ -83,7 +83,7 @@ def init(env, env_name):
     return state_dim, action_dim
 
 
-def get_network(state_dim, action_dim, hidden_nodes=HIDDEN_NODES):
+def get_network(state_dim, action_dim, nid, hidden_nodes=HIDDEN_NODES):
     """Define the neural network used to approximate the q-function
 
     The suggested structure is to have each output node represent a Q value for
@@ -110,7 +110,7 @@ def get_network(state_dim, action_dim, hidden_nodes=HIDDEN_NODES):
     w2 = weight_variable([hidden_nodes, action_dim])
     b2 = bias_variable([action_dim])
 
-    y1 = tf.nn.tanh(tf.matmul(state_in, w1) + b1)
+    y1 = tf.nn.relu(tf.matmul(state_in, w1) + b1)
 
     q_values = tf.matmul(y1, w2) + b2
 
@@ -121,9 +121,10 @@ def get_network(state_dim, action_dim, hidden_nodes=HIDDEN_NODES):
     loss = tf.reduce_mean(tf.square(target_in - q_selected_action))
     optimise_step = tf.train.AdamOptimizer().minimize(loss)
 
-    train_loss_summary_op = tf.summary.scalar("TrainingLoss", loss)
+    train_loss_summary_op = tf.summary.scalar("TrainingLoss_"+nid, loss)
     return state_in, action_in, target_in, q_values, q_selected_action, \
-           loss, optimise_step, train_loss_summary_op
+           loss, optimise_step, train_loss_summary_op, \
+           w1, b1, w2, b2
 
 def init_session():
     global session, writer
@@ -297,7 +298,7 @@ def get_train_batch(replay_buffer):
             # TO IMPLEMENT: set the target_val to the correct Q value update
             max_index = np.argmax(Q_value_batch[i])
             selected_q_next = Q_target_batch[i][max_index]
-            target_val = reward_batch[i] + GAMMA * np.max(Q_value_batch[i])
+            target_val = reward_batch[i] + GAMMA * np.max(selected_q_next)
             target_batch.append(target_val)
 
 
@@ -322,9 +323,6 @@ def qtrain(env, state_dim, action_dim,
     # the total_reward across all eps
     batch_presentations_count = total_steps = total_reward = 0
 
-    USE_ALT = False
-
-
     for episode in range(num_episodes):
         # initialize task
         state = env.reset()
@@ -341,6 +339,14 @@ def qtrain(env, state_dim, action_dim,
         if test_mode: print("Test mode (epsilon set to 0.0)")
 
         ep_reward = 0
+
+
+        if episode % 10 == 0:
+            session.run(tf.assign(network_vars_alt[8], network_vars[8]))
+            session.run(tf.assign(network_vars_alt[9], network_vars[9]))
+            session.run(tf.assign(network_vars_alt[10], network_vars[10]))
+            session.run(tf.assign(network_vars_alt[11], network_vars[11]))
+
         for step in range(ep_max_steps):
 
             total_steps += 1
@@ -360,7 +366,7 @@ def qtrain(env, state_dim, action_dim,
             state = next_state
 
 
-            MODE = 1
+            MODE = randint(0, 1)
             if MODE == 1:
                 VALUE_NETWORK = network_vars
                 TAGRET_NETWORK = network_vars_alt
@@ -414,8 +420,8 @@ def setup():
     global network_vars_alt
     global VALUE_NETWORK
 
-    network_vars = get_network(state_dim, action_dim)
-    network_vars_alt = get_network(state_dim, action_dim)
+    network_vars = get_network(state_dim, action_dim, '1')
+    network_vars_alt = get_network(state_dim, action_dim, '2')
     VALUE_NETWORK = network_vars
 
     init_session()
