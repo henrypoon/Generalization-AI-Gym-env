@@ -10,18 +10,18 @@ from random import randint
 Hyper Parameters
 """
 GAMMA = 0.9  # discount factor for target Q
-INITIAL_EPSILON = 0.6  # starting value of epsilon
+INITIAL_EPSILON = 0.9  # starting value of epsilon
 FINAL_EPSILON = 0.1  # final value of epsilon
-EPSILON_DECAY_STEPS = 100
+EPSILON_DECAY_STEPS = 600
 REPLAY_SIZE = 10000  # experience replay buffer size
-BATCH_SIZE = 128  # size of minibatch
+BATCH_SIZE = 256  # size of minibatch
 TEST_FREQUENCY = 10  # How many episodes to run before visualizing test accuracy
 SAVE_FREQUENCY = 1000  # How many episodes to run before saving model (unused)
 NUM_EPISODES = 10000  # Episode limitation
-EP_MAX_STEPS = 200  # Step limitation in an episode
+EP_MAX_STEPS = 800  # Step limitation in an episode
 # The number of test iters (with epsilon set to 0) to run every TEST_FREQUENCY episodes
 NUM_TEST_EPS = 4
-HIDDEN_NODES = 48
+HIDDEN_NODES = 60
 PRIORITISED_REPLAY = False
 DOUBLE_DQN = True
 
@@ -341,7 +341,7 @@ def qtrain(env, state_dim, action_dim,
         ep_reward = 0
 
 
-        if episode % 10 == 0:
+        if episode % 5 == 0:
             session.run(tf.assign(network_vars_alt[8], network_vars[8]))
             session.run(tf.assign(network_vars_alt[9], network_vars[9]))
             session.run(tf.assign(network_vars_alt[10], network_vars[10]))
