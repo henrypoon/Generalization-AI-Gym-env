@@ -1,1 +1,7 @@
-# cs9444-assn3
+# Generalization of AI Gym environemnt
+
+including
+
+CartPole-v0
+MountainCar-v0
+Pendulum-v0
